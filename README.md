@@ -23,16 +23,33 @@ In your Avalon batch manifest set the **File** column to the base name (`content
 - NVIDIA driver ≥ 520 (CUDA 11.8+), confirmed working on DGX Spark with the bundled driver stack
 - Python dependency: [`tqdm`](https://tqdm.github.io/) (installed automatically by `uv sync`)
 
+## Parallel processing
+
+By default the tool runs **3 workers** in parallel — one per quality level — so `high`, `medium`, and `low` for the same file encode simultaneously. You can tune this with `-j`:
+
+```bash
+# default: 3 workers (all three variants of one file at once)
+uv run transcode /path/to/media/
+
+# 6 workers: two files' worth of variants concurrently
+uv run transcode /path/to/media/ -j 6
+
+# sequential (useful for debugging)
+uv run transcode /path/to/media/ -j 1
+```
+
+On a DGX Spark the NVENC engine handles multiple concurrent sessions comfortably. The CUDA core utilization shown by `nvidia-smi` will remain low regardless — NVENC/NVDEC are fixed-function silicon separate from the CUDA cores. Use `nvidia-smi --query-gpu=encoder.stats.sessionCount,encoder.stats.averageFps --format=csv` to see actual encoder activity.
+
 ## Progress display
 
-Two live progress bars are shown during a run:
+A single progress bar tracks all (file × quality) jobs:
 
 ```
-Files:  42%|████████████            | 5/12 [03:21<04:35, last=game_film.mp4]
-  game_film.mp4:  67%|████████████████      | 2/3 [01:10<00:35, quality=low]
+Found 4 file(s) → 12 transcode job(s) — 3 worker(s)
+ 58%|██████████████          | 7/12 [02:14<01:35, file=game_film.mp4, quality=low]
 ```
 
-The outer bar tracks files completed; the inner bar tracks quality variants within the current file. ffmpeg errors are written above the bars with `tqdm.write` so they don't corrupt the display. Logging output (warnings, debug) is suppressed by default to keep the progress bars clean — pass `-v` to enable it.
+ffmpeg errors are written above the bar via `tqdm.write` so they don't corrupt the display. Logging output is suppressed by default — pass `-v` to enable debug output.
 
 ## Quick start
 

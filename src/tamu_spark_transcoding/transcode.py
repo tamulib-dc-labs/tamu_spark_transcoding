@@ -6,6 +6,7 @@ import argparse
 import logging
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from tqdm import tqdm
@@ -72,57 +73,41 @@ def build_ffmpeg_cmd(
 def output_path_for(input_path: Path, quality: str, output_dir: Path | None) -> Path:
     stem = sanitize_stem(input_path.stem)
     if stem != input_path.stem:
-        log.warning("Sanitized output name: '%s' → '%s'", input_path.stem, stem)
+        tqdm.write(f"WARNING: sanitized '{input_path.stem}' → '{stem}'")
     dest_dir = output_dir if output_dir else input_path.parent
     return dest_dir / f"{stem}.{quality}.mp4"
 
 
-def transcode_file(
+def transcode_one(
     input_path: Path,
-    qualities: list[str],
+    quality: str,
     output_dir: Path | None,
     gpu_index: int,
     dry_run: bool,
     skip_existing: bool,
-    file_bar: tqdm,
-) -> dict[str, bool]:
-    results: dict[str, bool] = {}
+) -> tuple[Path, str, bool]:
+    """Transcode a single (file, quality) pair. Returns (path, quality, success)."""
+    out = output_path_for(input_path, quality, output_dir)
 
-    with tqdm(
-        total=len(qualities),
-        desc=f"  {input_path.name}",
-        unit="variant",
-        leave=False,
-        position=1,
-    ) as quality_bar:
-        for quality in qualities:
-            quality_bar.set_postfix(quality=quality)
-            profile = PROFILES[quality]
-            out = output_path_for(input_path, quality, output_dir)
+    if skip_existing and out.exists():
+        log.debug("Skipping existing %s", out)
+        return input_path, quality, True
 
-            if skip_existing and out.exists():
-                log.info("Skipping existing %s", out)
-                results[quality] = True
-                quality_bar.update(1)
-                continue
+    profile = PROFILES[quality]
+    cmd = build_ffmpeg_cmd(input_path, out, profile, gpu_index)
+    log.debug("Command: %s", " ".join(cmd))
 
-            cmd = build_ffmpeg_cmd(input_path, out, profile, gpu_index)
-            log.debug("Command: %s", " ".join(cmd))
+    if dry_run:
+        tqdm.write(f"DRY RUN: {' '.join(cmd)}")
+        return input_path, quality, True
 
-            if dry_run:
-                tqdm.write(f"DRY RUN: {' '.join(cmd)}")
-                results[quality] = True
-            else:
-                proc = subprocess.run(cmd, capture_output=True)
-                results[quality] = proc.returncode == 0
-                if proc.returncode != 0:
-                    tqdm.write(f"ERROR: ffmpeg failed for {input_path} [{quality}]")
-                    tqdm.write(proc.stderr.decode(errors="replace"))
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        tqdm.write(f"ERROR: ffmpeg failed — {input_path.name} [{quality}]")
+        tqdm.write(proc.stderr.decode(errors="replace"))
+        return input_path, quality, False
 
-            quality_bar.update(1)
-
-    file_bar.set_postfix(last=input_path.name)
-    return results
+    return input_path, quality, True
 
 
 def find_inputs(root: Path, recursive: bool) -> list[Path]:
@@ -161,6 +146,13 @@ def main() -> None:
         default=list(PROFILES),
         metavar="QUALITY",
         help="Quality levels to produce: high medium low (default: all three).",
+    )
+    parser.add_argument(
+        "-j", "--workers",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Number of parallel ffmpeg workers (default: 3, one per quality level).",
     )
     parser.add_argument(
         "--gpu",
@@ -204,32 +196,35 @@ def main() -> None:
         print(f"No valid input files found at: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    failures: list[Path] = []
+    # Build the full list of (file, quality) jobs
+    jobs = [(path, quality) for path in inputs for quality in args.qualities]
+    total_jobs = len(jobs)
 
-    with tqdm(
-        total=len(inputs),
-        desc="Files",
-        unit="file",
-        position=0,
-    ) as file_bar:
-        for path in inputs:
-            results = transcode_file(
-                path,
-                args.qualities,
-                args.output_dir,
-                args.gpu,
-                args.dry_run,
-                args.skip_existing,
-                file_bar,
-            )
-            if not all(results.values()):
-                failures.append(path)
-            file_bar.update(1)
+    print(f"Found {len(inputs)} file(s) → {total_jobs} transcode job(s) — {args.workers} worker(s)")
+
+    failures: list[tuple[Path, str]] = []
+
+    with tqdm(total=total_jobs, unit="variant") as bar:
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {
+                pool.submit(
+                    transcode_one,
+                    path, quality, args.output_dir,
+                    args.gpu, args.dry_run, args.skip_existing,
+                ): (path, quality)
+                for path, quality in jobs
+            }
+            for future in as_completed(futures):
+                path, quality, ok = future.result()
+                if not ok:
+                    failures.append((path, quality))
+                bar.set_postfix(file=path.name, quality=quality)
+                bar.update(1)
 
     if failures:
-        print(f"\n{len(failures)} file(s) had errors:", file=sys.stderr)
-        for f in failures:
-            print(f"  {f}", file=sys.stderr)
+        print(f"\n{len(failures)} job(s) failed:", file=sys.stderr)
+        for path, quality in failures:
+            print(f"  {path} [{quality}]", file=sys.stderr)
         sys.exit(1)
 
     print("Done.")
