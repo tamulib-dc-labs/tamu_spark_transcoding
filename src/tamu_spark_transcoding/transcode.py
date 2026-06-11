@@ -64,7 +64,6 @@ def build_ffmpeg_cmd(
         "-c:a", profile["audio_codec"],
         "-b:a", profile["audio_bitrate"],
         "-ac", str(profile["audio_channels"]),
-        "-movflags", "+faststart",
         str(output_path),
     ]
     return cmd
