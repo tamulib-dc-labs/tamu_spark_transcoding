@@ -94,6 +94,12 @@ All profiles use `h264_nvenc` (NVIDIA NVENC) with hardware-accelerated decode (`
 
 Profiles are defined in [`src/tamu_spark_transcoding/profiles.py`](src/tamu_spark_transcoding/profiles.py) — edit bitrates, presets, and resolutions there.
 
+## Corrupt source files
+
+The tool passes `-fflags +discardcorrupt` to ffmpeg, so damaged packets (invalid NAL units, NaN audio frames, etc.) are silently dropped rather than aborting the encode. A corrupted source will still produce a complete output file; affected frames may have brief visual or audio glitches at the points where packets were discarded.
+
+If a file fails despite this flag, the corruption is severe enough that ffmpeg cannot recover a usable stream. Re-obtain the source file and try again.
+
 ## Filename sanitization
 
 Avalon does not allow extra dots in variant filenames. The tool automatically sanitizes stems before writing output:

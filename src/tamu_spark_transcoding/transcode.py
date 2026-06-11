@@ -31,7 +31,7 @@ def sanitize_stem(stem: str) -> str:
       - remaining periods → hyphen
     """
     stem = stem.replace(". ", "-")
-    return stem.replace(" ", "_").replace(".", "-")
+    return stem.replace(" ", "_").replace(".", "-").replace("&", "and")
 
 
 def build_ffmpeg_cmd(
@@ -48,6 +48,7 @@ def build_ffmpeg_cmd(
         "-hwaccel_output_format", "cuda",
         "-extra_hw_frames", "4",        # extra surfaces for scale_cuda filter pipeline
         "-threads", "1",                # prevent NVDEC surface exhaustion under parallel jobs
+        "-fflags", "+discardcorrupt",   # skip corrupted packets rather than aborting
         "-i", str(input_path),
         "-c:v", profile["video_codec"],
         "-preset", profile["preset"],
