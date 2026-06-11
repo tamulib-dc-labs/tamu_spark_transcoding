@@ -46,6 +46,8 @@ def build_ffmpeg_cmd(
         "-hwaccel", "cuda",
         "-hwaccel_device", str(gpu_index),
         "-hwaccel_output_format", "cuda",
+        "-extra_hw_frames", "4",        # extra surfaces for scale_cuda filter pipeline
+        "-threads", "1",                # prevent NVDEC surface exhaustion under parallel jobs
         "-i", str(input_path),
         "-c:v", profile["video_codec"],
         "-preset", profile["preset"],
